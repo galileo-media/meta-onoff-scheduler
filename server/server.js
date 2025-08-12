@@ -28,7 +28,8 @@ try {
 }
 if (!CREDS.length) console.warn('[WARN] META_CREDENTIALS_JSON not set or empty');
 
-const db = new Database('rules.db');
+const DB_PATH = process.env.RULES_DB_PATH || 'rules.db';
+const db = new Database(DB_PATH);
 db.exec(`CREATE TABLE IF NOT EXISTS rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id TEXT NOT NULL,
