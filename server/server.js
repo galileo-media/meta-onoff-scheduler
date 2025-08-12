@@ -176,6 +176,19 @@ app.get('/api/accounts', async (req, res) => {
     await slackNotify(`Failed to list ad accounts. Error: \`${JSON.stringify(err).slice(0,500)}\``);
     res.status(500).send('Failed to list accounts');
   }
+app.post('/api/test-slack', async (req, res) => {
+  try {
+    const ok = process.env.SLACK_TEST_TOKEN;
+    const hdr = req.headers['x-slack-test-token'];
+    if (ok && hdr !== ok) return res.status(403).json({ error: 'Forbidden' });
+    await slackNotify(':mega: *Test alert* from Meta On/Off Scheduler – Slack integration is working.');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('test-slack failed', e.response?.data || e.message);
+    res.status(500).json({ ok: false, error: 'Failed to send Slack test' });
+  }
+});
+
 });
 
 app.get('/api/rules', (req, res) => {

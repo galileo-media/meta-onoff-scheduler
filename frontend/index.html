@@ -11,8 +11,11 @@
     <h1>Meta On/Off Scheduler</h1>
     <section>
       <h2>Accounts</h2>
-      <button id="refreshAccounts">Refresh</button>
-      <div id="accountsStatus" class="badge">Idle</div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button id="refreshAccounts">Refresh</button>
+        <button id="testSlack">Test Slack</button>
+        <div id="accountsStatus" class="badge">Idle</div>
+      </div>
       <select id="accountSelect"></select>
       <ul id="accounts"></ul>
     </section>
