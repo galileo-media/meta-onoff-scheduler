@@ -1,0 +1,11 @@
+# dependencies
+node_modules/
+# env and local data
+server/.env
+server/data/
+server/package-lock.json
+frontend/package-lock.json
+# build output
+frontend/dist/
+# OS/editor
+.DS_Store
