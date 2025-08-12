@@ -39,13 +39,14 @@ function renderAccountsList(data) {
   }
 }
 
-accountSelect.addEventListener('change', () => {
+accountSelect.addEventListener('change', async () => {
   const id = accountSelect.value;
   selectedAccount = accounts.find(a => a.id === id) || null;
   if (selectedAccount) {
     document.getElementById('accountId').value = selectedAccount.id;
     document.getElementById('tz').value = selectedAccount.tz || document.getElementById('tz').value;
   }
+  await loadRules();
 });
 
 async function loadAccounts() {
@@ -66,19 +67,22 @@ async function loadAccounts() {
 
 async function loadRules() {
   rulesBody.innerHTML = '';
-  const rows = await fetchJSON(`${API}/api/rules`);
+  const accId = selectedAccount?.id;
+  if (!accId) return;
+  const rows = await fetchJSON(`${API}/api/rules?account_id=${encodeURIComponent(accId)}`);
   for (const r of rows) {
     const tr = document.createElement('tr');
-    const targets = r.ids && r.ids.length ? r.ids.join(',') : (r.name_contains || '');
+    const targets = Array.isArray(r.target_ids) && r.target_ids.length ? r.target_ids.join(',') : (r.name_filter || '');
+    const days = Array.isArray(r.days_of_week) ? r.days_of_week.join(',') : '';
     tr.innerHTML = `
       <td>${r.id}</td>
       <td>${r.account_id}</td>
       <td>${r.level}</td>
       <td>${targets}</td>
-      <td>${r.stop} → ${r.start}</td>
-      <td>${r.tz}</td>
-      <td>${(r.days||[]).join(',')}</td>
-      <td>${r.enforce_every}m</td>
+      <td>${r.stop_time} → ${r.start_time}</td>
+      <td>${r.timezone}</td>
+      <td>${days}</td>
+      <td>${r.enforce_window_minutes}m</td>
       <td><button data-id="${r.id}" class="del">Delete</button></td>
     `;
     rulesBody.appendChild(tr);
@@ -132,4 +136,9 @@ rulesBody.addEventListener('click', async (e) => {
   }
 });
 
-loadAccounts().then(loadRules);
+loadAccounts().then(async () => {
+  if (accounts.length && accountSelect) {
+    accountSelect.value = accounts[0].id;
+    accountSelect.dispatchEvent(new Event('change'));
+  }
+});
