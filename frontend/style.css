@@ -1,0 +1,9 @@
+#app{max-width:900px;margin:24px auto;font-family:system-ui,Arial,sans-serif}
+h1{font-size:20px}
+section{border:1px solid #ddd;padding:16px;margin-bottom:16px;border-radius:8px}
+label{display:block;margin:6px 0}
+input,select{padding:6px 8px;margin-right:8px}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #ddd;padding:8px;text-align:left}
+button{padding:8px 12px}
+.badge{padding:2px 6px;border-radius:4px;background:#eef}

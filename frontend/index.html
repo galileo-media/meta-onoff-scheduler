@@ -1,8 +1,52 @@
 <!DOCTYPE html>
 <html>
-<head><title>Meta On/Off Scheduler</title></head>
+<head>
+  <meta charset="utf-8" />
+  <title>Meta On/Off Scheduler</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
 <body>
-<div id="root"></div>
-<script type="module" src="/main.js"></script>
+  <div id="app">
+    <h1>Meta On/Off Scheduler</h1>
+    <section>
+      <h2>Accounts</h2>
+      <button id="refreshAccounts">Refresh</button>
+      <div id="accountsStatus" class="badge">Idle</div>
+      <select id="accountSelect"></select>
+      <ul id="accounts"></ul>
+    </section>
+    <section>
+      <h2>Create Rule</h2>
+      <div>
+        <label>Account ID <input id="accountId" placeholder="e.g. 1234567890" /></label>
+        <label>Level
+          <select id="level">
+            <option value="campaign">Campaign</option>
+            <option value="adset">Ad Set</option>
+          </select>
+        </label>
+        <label>IDs (comma separated) <input id="ids" placeholder="123,456" /></label>
+        <label>Name contains (optional) <input id="nameContains" placeholder="Search substring" /></label>
+        <label>Stop HH:mm <input id="stop" value="23:00" /></label>
+        <label>Start HH:mm <input id="start" value="00:01" /></label>
+        <label>TZ <input id="tz" value="Asia/Jerusalem" /></label>
+        <label>Days (0-6, comma) <input id="days" value="0,1,2,3,4,5,6" /></label>
+        <label>Enforce every minutes <input id="enforceEvery" value="5" /></label>
+      </div>
+      <button id="createRule">Create Rule</button>
+      <div id="createStatus" class="badge">Idle</div>
+    </section>
+    <section>
+      <h2>Existing Rules</h2>
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Account</th><th>Level</th><th>Targets</th><th>Window</th><th>TZ</th><th>Days</th><th>Enforce</th><th></th></tr>
+        </thead>
+        <tbody id="rules"></tbody>
+      </table>
+    </section>
+  </div>
+  <script type="module" src="/main.js"></script>
 </body>
 </html>
