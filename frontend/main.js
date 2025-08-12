@@ -6,23 +6,55 @@ const refreshBtn = document.getElementById('refreshAccounts');
 const rulesBody = document.getElementById('rules');
 const createBtn = document.getElementById('createRule');
 const createStatus = document.getElementById('createStatus');
+const accountSelect = document.getElementById('accountSelect');
+
+let accounts = [];
+let selectedAccount = null;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, opts);
   return res.json();
 }
 
+function renderAccountsList(data) {
+  accountsEl.innerHTML = '';
+  accountSelect.innerHTML = '';
+  const defaultOpt = document.createElement('option');
+  defaultOpt.value = '';
+  defaultOpt.textContent = 'Select account';
+  accountSelect.appendChild(defaultOpt);
+
+  for (const a of data) {
+    const label = `${a.name} (BM: ${a.business_id}, Cred: ${a.cred_index})`;
+    const li = document.createElement('li');
+    li.textContent = `${label} — ${a.id}`;
+    accountsEl.appendChild(li);
+
+    const opt = document.createElement('option');
+    opt.value = a.id;
+    opt.textContent = label;
+    opt.dataset.credIndex = a.cred_index;
+    opt.dataset.businessId = a.business_id;
+    accountSelect.appendChild(opt);
+  }
+}
+
+accountSelect.addEventListener('change', () => {
+  const id = accountSelect.value;
+  selectedAccount = accounts.find(a => a.id === id) || null;
+  if (selectedAccount) {
+    document.getElementById('accountId').value = selectedAccount.id;
+    document.getElementById('tz').value = selectedAccount.tz || document.getElementById('tz').value;
+  }
+});
+
 async function loadAccounts() {
   accountsStatus.textContent = 'Loading...';
-  accountsEl.innerHTML = '';
   try {
     const data = await fetchJSON(`${API}/api/accounts`);
     if (Array.isArray(data)) {
-      for (const a of data) {
-        const li = document.createElement('li');
-        li.textContent = `${a.name} (${a.id}) — ${a.timezone_name ?? ''}`;
-        accountsEl.appendChild(li);
-      }
+      accounts = data;
+      renderAccountsList(data);
       accountsStatus.textContent = `Loaded ${data.length}`;
     } else {
       accountsStatus.textContent = 'Error';
@@ -60,13 +92,19 @@ createBtn.addEventListener('click', async () => {
   const b = {
     account_id: document.getElementById('accountId').value.trim(),
     level: document.getElementById('level').value,
-    ids: document.getElementById('ids').value.split(',').map(s => s.trim()).filter(Boolean),
-    name_contains: document.getElementById('nameContains').value.trim(),
-    stop: document.getElementById('stop').value.trim(),
-    start: document.getElementById('start').value.trim(),
-    tz: document.getElementById('tz').value.trim(),
-    days: document.getElementById('days').value.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !Number.isNaN(n)),
-    enforce_every: parseInt(document.getElementById('enforceEvery').value.trim(), 10)
+    target_ids: document.getElementById('ids').value.split(',').map(s => s.trim()).filter(Boolean),
+    name_filter: document.getElementById('nameContains').value.trim(),
+    stop_time: document.getElementById('stop').value.trim(),
+    start_time: document.getElementById('start').value.trim(),
+    timezone: document.getElementById('tz').value.trim(),
+    days_of_week: document.getElementById('days').value.split(',').map(s => s.trim()).map(n => {
+      const map = {0:'Sun',1:'Mon',2:'Tue',3:'Wed',4:'Thu',5:'Fri',6:'Sat'};
+      const idx = parseInt(n,10);
+      return Number.isNaN(idx) ? n : map[idx];
+    }),
+    enforce_window_minutes: parseInt(document.getElementById('enforceEvery').value.trim(), 10) || 5,
+    cred_index: selectedAccount ? selectedAccount.cred_index : 0,
+    enabled: true
   };
   try {
     const r = await fetch(`${API}/api/rules`, {

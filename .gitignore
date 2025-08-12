@@ -3,6 +3,7 @@ node_modules/
 # env and local data
 server/.env
 server/data/
+server/rules.db
 server/package-lock.json
 frontend/package-lock.json
 # build output

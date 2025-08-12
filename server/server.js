@@ -1,254 +1,239 @@
-import dotenv from 'dotenv';
 import express from 'express';
-import cors from 'cors';
-import bodyParser from 'body-parser';
-import fetch from 'node-fetch';
+import Database from 'better-sqlite3';
 import cron from 'node-cron';
-import fs from 'fs-extra';
-import dayjs from 'dayjs';
-
-dotenv.config();
+import axios from 'axios';
+import cors from 'cors';
+import 'dotenv/config';
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
-const DATA_DIR = new URL('./data/', import.meta.url).pathname;
-const RULES_PATH = new URL('./data/rules.json', import.meta.url).pathname;
+const CREDS = JSON.parse(process.env.META_CREDENTIALS_JSON || '[]'); // [{business_id, access_token, timezone}]
+const DEFAULT_TZ = process.env.ACCOUNT_TIMEZONE_DEFAULT || 'Asia/Jerusalem';
+const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
+if (!CREDS.length) console.warn('[WARN] META_CREDENTIALS_JSON not set or empty');
 
-await fs.ensureDir(DATA_DIR);
-if (!(await fs.pathExists(RULES_PATH))) {
-  await fs.writeJson(RULES_PATH, { rules: [] });
+async function slackNotify(text) {
+  if (!SLACK_WEBHOOK) return;
+  try { await axios.post(SLACK_WEBHOOK, { text: `:warning: *Meta On/Off Scheduler*\n${text}` }); }
+  catch (e) { console.error('Slack notify failed', e.response?.data || e.message); }
 }
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
-const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || '';
-const META_BUSINESS_ID = process.env.META_BUSINESS_ID || '';
-const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL || '';
-const ACCOUNT_TIMEZONE_DEFAULT = process.env.ACCOUNT_TIMEZONE_DEFAULT || 'UTC';
+const db = new Database('rules.db');
+db.exec(`CREATE TABLE IF NOT EXISTS rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id TEXT NOT NULL,
+  level TEXT NOT NULL CHECK(level IN ('campaign','adset')),
+  target_ids TEXT NOT NULL,
+  name_filter TEXT,
+  stop_time TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  enforce_window_minutes INTEGER NOT NULL DEFAULT 30,
+  days_of_week TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run TEXT,
+  next_run TEXT
+);`);
+try {
+  db.exec(`ALTER TABLE rules ADD COLUMN cred_index INTEGER NOT NULL DEFAULT 0;`);
+  console.log('[DB] Added cred_index column');
+} catch {}
 
-const schedulers = new Map();
-
-function readRules() {
-  return fs.readJson(RULES_PATH);
-}
-
-async function writeRules(data) {
-  await fs.writeJson(RULES_PATH, data);
-}
-
-async function postSlack(text) {
-  if (!SLACK_WEBHOOK_URL) return;
-  try {
-    await fetch(SLACK_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text })
-    });
-  } catch {}
-}
-
-function cronForTime(t, tz) {
-  const [hh, mm] = t.split(':').map(x => parseInt(x, 10));
-  const m = isNaN(mm) ? 0 : mm;
-  const h = isNaN(hh) ? 0 : hh;
-  return { expr: `${m} ${h} * * *`, tz };
-}
-
-async function listOwnedAdAccounts() {
-  if (!META_ACCESS_TOKEN || !META_BUSINESS_ID) {
-    return { error: 'missing_credentials' };
-  }
-  const url = new URL(`https://graph.facebook.com/v23.0/${META_BUSINESS_ID}/owned_ad_accounts`);
-  url.searchParams.set('fields', ['account_id', 'name', 'timezone_name', 'timezone_offset_hours_utc'].join(','));
-  url.searchParams.set('access_token', META_ACCESS_TOKEN);
-  try {
-    const res = await fetch(url.toString());
-    const json = await res.json();
-    if (!res.ok) {
-      await postSlack(`Meta API error listing accounts: ${JSON.stringify(json)}`);
-      return { error: 'meta_error', detail: json };
-    }
-    const data = Array.isArray(json.data) ? json.data : [];
-    return data.map(x => ({
-      id: x.account_id || x.id || '',
-      name: x.name || '',
-      timezone_name: x.timezone_name || ACCOUNT_TIMEZONE_DEFAULT,
-      timezone_offset_hours_utc: typeof x.timezone_offset_hours_utc === 'number' ? x.timezone_offset_hours_utc : null
-    }));
-  } catch (e) {
-    await postSlack(`Meta API request failure: ${String(e)}`);
-    return { error: 'network_error' };
-  }
-}
-
-async function setStatusOnObjects(level, ids, status) {
-  const results = [];
-  for (const id of ids) {
-    const url = new URL(`https://graph.facebook.com/v23.0/${id}`);
-    url.searchParams.set('access_token', META_ACCESS_TOKEN);
-    const body = new URLSearchParams();
-    body.set('status', status);
-    try {
-      const res = await fetch(url.toString(), { method: 'POST', body });
-      const json = await res.json();
-      if (!res.ok) {
-        results.push({ id, ok: false, error: json });
-        await postSlack(`Meta API status update failed for ${level} ${id}: ${JSON.stringify(json)}`);
-      } else {
-        results.push({ id, ok: true, result: json });
-      }
-    } catch (e) {
-      results.push({ id, ok: false, error: String(e) });
-      await postSlack(`Meta API request failed for ${level} ${id}: ${String(e)}`);
-    }
-  }
-  return results;
-}
-
-async function findTargetsByName(accountId, level, nameContains) {
-  const node = level === 'campaign' ? 'campaigns' : 'adsets';
-  const base = new URL(`https://graph.facebook.com/v23.0/act_${accountId}/${node}`);
-  base.searchParams.set('fields', 'id,name,effective_status,configured_status');
-  base.searchParams.set('limit', '500');
-  base.searchParams.set('access_token', META_ACCESS_TOKEN);
-
-  const out = [];
-  let url = base.toString();
-  for (let i = 0; i < 10 && url; i++) {
-    const res = await fetch(url);
-    const json = await res.json();
-    if (!res.ok) {
-      await postSlack(`Meta API list ${node} failed: ${JSON.stringify(json)}`);
-      break;
-    }
-    const data = Array.isArray(json.data) ? json.data : [];
-    for (const it of data) {
-      if (!nameContains || (it.name || '').toLowerCase().includes(nameContains.toLowerCase())) {
-        out.push(it.id);
-      }
-    }
-    url = json.paging && json.paging.next ? json.paging.next : null;
-  }
-  return out;
-}
-
-function inActiveWindow(rule, now) {
-  const n = dayjs(now);
-  const day = n.day();
-  if (!rule.days || !Array.isArray(rule.days) || rule.days.length === 0) return true;
-  if (!rule.days.includes(day)) return false;
-  const t = (s) => {
-    const [h, m] = s.split(':').map(v => parseInt(v, 10));
-    return h * 60 + m;
-  };
-  const mins = n.hour() * 60 + n.minute();
-  const start = t(rule.start);
-  const stop = t(rule.stop);
-  if (start === stop) return false;
-  if (start < stop) {
-    return mins >= start && mins < stop;
-  }
-  return !(mins >= stop && mins < start);
-}
-
-async function enforceRule(rule) {
-  const now = dayjs();
-  const desiredActive = inActiveWindow(rule, now);
-  const status = desiredActive ? 'ACTIVE' : 'PAUSED';
-  const ids = rule.ids && rule.ids.length > 0 ? rule.ids : await findTargetsByName(rule.account_id, rule.level, rule.name_contains || '');
-  await setStatusOnObjects(rule.level, ids, status);
-}
-
-function unschedule(id) {
-  const set = schedulers.get(id);
-  if (set) {
-    for (const job of set) job.stop();
-    schedulers.delete(id);
-  }
-}
-
+const jobs = new Map();
 function scheduleRule(rule) {
-  unschedule(rule.id);
-  const tz = rule.tz || ACCOUNT_TIMEZONE_DEFAULT;
-  const s1 = cronForTime(rule.stop, tz);
-  const s2 = cronForTime(rule.start, tz);
-  const job1 = cron.schedule(s1.expr, async () => {
-    const ids = rule.ids && rule.ids.length > 0 ? rule.ids : await findTargetsByName(rule.account_id, rule.level, rule.name_contains || '');
-    await setStatusOnObjects(rule.level, ids, 'PAUSED');
-  }, { timezone: tz });
-  const job2 = cron.schedule(s2.expr, async () => {
-    const ids = rule.ids && rule.ids.length > 0 ? rule.ids : await findTargetsByName(rule.account_id, rule.level, rule.name_contains || '');
-    await setStatusOnObjects(rule.level, ids, 'ACTIVE');
-  }, { timezone: tz });
-  const every = Math.max(1, Math.min(60, parseInt(rule.enforce_every || '5', 10)));
-  const job3 = cron.schedule(`*/${every} * * * *`, async () => {
-    await enforceRule(rule);
-  }, { timezone: tz });
-  schedulers.set(rule.id, [job1, job2, job3]);
+  unscheduleRule(rule.id);
+  if (!rule.enabled) return;
+
+  const tz = rule.timezone || DEFAULT_TZ;
+  const [stopH, stopM] = rule.stop_time.split(':').map(Number);
+  const [startH, startM] = rule.start_time.split(':').map(Number);
+
+  const stop = cron.schedule(`${stopM} ${stopH} * * *`, () => enforce(rule, 'PAUSED'), { timezone: tz });
+  const start = cron.schedule(`${startM} ${startH} * * *`, () => enforce(rule, 'ACTIVE'), { timezone: tz });
+
+  const everyXMins = Math.max(5, Number(rule.enforce_window_minutes) || 30);
+  const enforceTask = cron.schedule(`*/${everyXMins} * * * *`, () => periodicEnforce(rule), { timezone: tz });
+
+  jobs.set(rule.id, { stop, start, enforce: enforceTask });
+}
+function unscheduleRule(ruleId) {
+  const j = jobs.get(ruleId);
+  if (!j) return;
+  Object.values(j).forEach(t => t.stop());
+  jobs.delete(ruleId);
 }
 
-async function bootstrapSchedules() {
-  const { rules } = await readRules();
-  for (const r of rules) scheduleRule(r);
+function getTokenForRule(rule) {
+  const i = Number(rule.cred_index || 0);
+  return CREDS[i]?.access_token;
 }
 
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true });
-});
+async function fetchByNameFilter(rule) {
+  const token = getTokenForRule(rule);
+  const endpoint = `https://graph.facebook.com/v19.0/act_${rule.account_id}/${rule.level === 'campaign' ? 'campaigns' : 'adsets'}`;
+  const res = await axios.get(endpoint, {
+    params: { fields: 'id,name,configured_status', limit: 200, access_token: token }
+  });
+  return res.data.data.filter(x => (x.name || '').includes(rule.name_filter)).map(x => x.id);
+}
+async function getTargets(rule) {
+  const ids = JSON.parse(rule.target_ids || '[]');
+  if (ids.length) return ids;
+  if (!rule.name_filter) return [];
+  return fetchByNameFilter(rule);
+}
+
+async function setStatus(id, desired, rule) {
+  const token = getTokenForRule(rule);
+  const url = `https://graph.facebook.com/v19.0/${id}`;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await axios.post(url, { status: desired, access_token: token });
+      return;
+    } catch (e) {
+      const code = e.response?.data?.error?.code;
+      const transient = [1,2,4,17,32,613,80004].includes(code);
+      if (attempt < 3 && transient) await new Promise(r => setTimeout(r, 500 * attempt));
+      else throw e;
+    }
+  }
+}
+
+async function enforce(rule, desired) {
+  const dow = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: rule.timezone }).format(new Date());
+  if (!JSON.parse(rule.days_of_week).includes(dow)) return;
+
+  const targets = await getTargets(rule);
+  if (!targets.length) return;
+
+  for (const id of targets) {
+    try { await setStatus(id, desired, rule); }
+    catch (e) {
+      const err = e.response?.data || e.message;
+      console.error('Toggle failed', id, err);
+      await slackNotify(`Failed to set *${desired}* on ${rule.level} ${id} (rule #${rule.id}).\nError: \`${JSON.stringify(err).slice(0,500)}\``);
+    }
+  }
+  db.prepare('UPDATE rules SET last_run = datetime("now") WHERE id = ?').run(rule.id);
+}
+
+async function periodicEnforce(rule) {
+  const tz = rule.timezone || DEFAULT_TZ;
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz });
+  const [hh, mm] = fmt.format(now).split(':').map(Number);
+  const cur = hh*60 + mm;
+  const [sh, sm] = rule.stop_time.split(':').map(Number);
+  const [th, tm] = rule.start_time.split(':').map(Number);
+  const stopMin = sh*60 + sm;
+  const startMin = th*60 + tm;
+
+  let desired = 'ACTIVE';
+  if (stopMin < startMin) {
+    if (cur >= stopMin && cur < startMin) desired = 'PAUSED';
+  } else {
+    if (cur >= stopMin || cur < startMin) desired = 'PAUSED';
+  }
+  return enforce(rule, desired);
+}
 
 app.get('/api/accounts', async (req, res) => {
-  const data = await listOwnedAdAccounts();
-  res.json(data);
-});
-
-app.get('/api/rules', async (req, res) => {
-  const data = await readRules();
-  res.json(data.rules);
-});
-
-app.post('/api/rules', async (req, res) => {
-  const b = req.body || {};
-  const id = `r_${Date.now()}`;
-  const rule = {
-    id,
-    account_id: String(b.account_id || ''),
-    level: b.level === 'adset' ? 'adset' : 'campaign',
-    ids: Array.isArray(b.ids) ? b.ids.map(String) : [],
-    name_contains: b.name_contains ? String(b.name_contains) : '',
-    stop: String(b.stop || '23:00'),
-    start: String(b.start || '00:01'),
-    tz: String(b.tz || ACCOUNT_TIMEZONE_DEFAULT),
-    days: Array.isArray(b.days) ? b.days.map(n => parseInt(n, 10)) : [0,1,2,3,4,5,6],
-    enforce_every: parseInt(b.enforce_every || '5', 10)
-  };
-  const data = await readRules();
-  data.rules.push(rule);
-  await writeRules(data);
-  scheduleRule(rule);
-  res.json(rule);
-});
-
-app.delete('/api/rules/:id', async (req, res) => {
-  const rid = req.params.id;
-  const data = await readRules();
-  const idx = data.rules.findIndex(r => r.id === rid);
-  if (idx >= 0) {
-    const [r] = data.rules.splice(idx, 1);
-    await writeRules(data);
-    unschedule(rid);
-    res.json({ ok: true, removed: r });
-  } else {
-    res.status(404).json({ error: 'not_found' });
+  try {
+    const all = [];
+    for (let i = 0; i < CREDS.length; i++) {
+      const { business_id, access_token, timezone } = CREDS[i];
+      const url = `https://graph.facebook.com/v19.0/${business_id}/owned_ad_accounts`;
+      const r = await axios.get(url, {
+        params: { fields: 'id,account_id,name,timezone_name,account_status', limit: 200, access_token }
+      });
+      for (const a of r.data.data) {
+        all.push({
+          id: a.account_id,
+          name: a.name,
+          tz: a.timezone_name || timezone || DEFAULT_TZ,
+          status: a.account_status,
+          act_id: `act_${a.account_id}`,
+          cred_index: i,
+          business_id
+        });
+      }
+    }
+    res.json(all);
+  } catch (e) {
+    const err = e.response?.data || e.message;
+    console.error('List accounts failed', err);
+    await slackNotify(`Failed to list ad accounts. Error: \`${JSON.stringify(err).slice(0,500)}\``);
+    res.status(500).send('Failed to list accounts');
   }
 });
 
-app.post('/api/test-slack', async (req, res) => {
-  const text = (req.body && req.body.text) || 'Test alert';
-  await postSlack(text);
+app.get('/api/rules', (req, res) => {
+  const { account_id } = req.query;
+  const rows = db.prepare('SELECT * FROM rules WHERE account_id = ? ORDER BY id DESC').all(account_id);
+  const mapped = rows.map(r => ({ ...r, target_ids: JSON.parse(r.target_ids), days_of_week: JSON.parse(r.days_of_week) }));
+  res.json(mapped);
+});
+
+app.post('/api/rules', (req, res) => {
+  const r = req.body;
+  const stmt = db.prepare(`INSERT INTO rules (account_id, level, target_ids, name_filter, stop_time, start_time, timezone, enforce_window_minutes, days_of_week, enabled, cred_index)
+    VALUES (@account_id, @level, @target_ids, @name_filter, @stop_time, @start_time, @timezone, @enforce_window_minutes, @days_of_week, @enabled, @cred_index)`);
+  const info = stmt.run({
+    account_id: r.account_id,
+    level: r.level,
+    target_ids: JSON.stringify(r.target_ids || []),
+    name_filter: r.name_filter || null,
+    stop_time: r.stop_time,
+    start_time: r.start_time,
+    timezone: r.timezone || DEFAULT_TZ,
+    enforce_window_minutes: r.enforce_window_minutes || 30,
+    days_of_week: JSON.stringify(r.days_of_week || ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]),
+    enabled: r.enabled ? 1 : 0,
+    cred_index: Number(r.cred_index || 0)
+  });
+  const row = db.prepare('SELECT * FROM rules WHERE id = ?').get(info.lastInsertRowid);
+  scheduleRule(row);
+  res.json({ id: info.lastInsertRowid });
+});
+
+app.patch('/api/rules/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT * FROM rules WHERE id = ?').get(id);
+  if (!row) return res.status(404).send('Not found');
+  const merged = { ...row, ...req.body };
+  merged.target_ids = JSON.stringify(req.body.target_ids ?? JSON.parse(row.target_ids));
+  merged.days_of_week = JSON.stringify(req.body.days_of_week ?? JSON.parse(row.days_of_week));
+  db.prepare(`UPDATE rules SET level=@level, target_ids=@target_ids, name_filter=@name_filter, stop_time=@stop_time, start_time=@start_time, timezone=@timezone, enforce_window_minutes=@enforce_window_minutes, days_of_week=@days_of_week, enabled=@enabled, cred_index=@cred_index WHERE id=@id`).run({
+    id,
+    level: merged.level,
+    target_ids: merged.target_ids,
+    name_filter: merged.name_filter,
+    stop_time: merged.stop_time,
+    start_time: merged.start_time,
+    timezone: merged.timezone,
+    enforce_window_minutes: merged.enforce_window_minutes,
+    days_of_week: merged.days_of_week,
+    enabled: merged.enabled ? 1 : 0,
+    cred_index: Number(merged.cred_index || 0)
+  });
+  const updated = db.prepare('SELECT * FROM rules WHERE id = ?').get(id);
+  scheduleRule(updated);
   res.json({ ok: true });
 });
 
-app.listen(PORT, async () => {
-  await bootstrapSchedules();
+app.delete('/api/rules/:id', (req, res) => {
+  const id = Number(req.params.id);
+  db.prepare('DELETE FROM rules WHERE id = ?').run(id);
+  unscheduleRule(id);
+  res.json({ ok: true });
 });
+
+(function init() {
+  const rows = db.prepare('SELECT * FROM rules WHERE enabled = 1').all();
+  for (const r of rows) scheduleRule(r);
+})();
+
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log(`API running on :${PORT}`));
