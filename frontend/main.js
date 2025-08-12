@@ -1,8 +1,10 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '';
+const SLACK_TEST_TOKEN = import.meta.env.VITE_SLACK_TEST_TOKEN || '';
 
 const accountsEl = document.getElementById('accounts');
 const accountsStatus = document.getElementById('accountsStatus');
 const refreshBtn = document.getElementById('refreshAccounts');
+const testSlackBtn = document.getElementById('testSlack');
 const rulesBody = document.getElementById('rules');
 const createBtn = document.getElementById('createRule');
 const createStatus = document.getElementById('createStatus');
@@ -55,6 +57,27 @@ async function loadAccounts() {
     const data = await fetchJSON(`${API_BASE}/api/accounts`);
     if (Array.isArray(data)) {
       accounts = data;
+if (testSlackBtn) {
+  testSlackBtn.addEventListener('click', async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/test-slack`, {
+        method: 'POST',
+        headers: {
+          'x-slack-test-token': SLACK_TEST_TOKEN
+        }
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        alert('Slack test failed ❌\n' + txt);
+      } else {
+        alert('Slack test sent ✅');
+      }
+    } catch (e) {
+      alert('Slack test failed ❌\n' + (e.message || e));
+    }
+  });
+}
+
       renderAccountsList(data);
       accountsStatus.textContent = `Loaded ${data.length}`;
     } else {
