@@ -9,16 +9,24 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const CREDS = JSON.parse(process.env.META_CREDENTIALS_JSON || '[]'); // [{business_id, access_token, timezone}]
-const DEFAULT_TZ = process.env.ACCOUNT_TIMEZONE_DEFAULT || 'Asia/Jerusalem';
 const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK_URL;
-if (!CREDS.length) console.warn('[WARN] META_CREDENTIALS_JSON not set or empty');
+const DEFAULT_TZ = process.env.ACCOUNT_TIMEZONE_DEFAULT || 'Asia/Jerusalem';
 
 async function slackNotify(text) {
   if (!SLACK_WEBHOOK) return;
   try { await axios.post(SLACK_WEBHOOK, { text: `:warning: *Meta On/Off Scheduler*\n${text}` }); }
   catch (e) { console.error('Slack notify failed', e.response?.data || e.message); }
 }
+
+let CREDS = [];
+try {
+  CREDS = JSON.parse(process.env.META_CREDENTIALS_JSON || '[]'); // [{business_id, access_token, timezone}]
+} catch (e) {
+  console.error('[ERROR] Failed to parse META_CREDENTIALS_JSON. Please ensure it is valid JSON array of credential objects.');
+  CREDS = [];
+  slackNotify('Failed to parse META_CREDENTIALS_JSON. Please ensure it is valid JSON array of credential objects.');
+}
+if (!CREDS.length) console.warn('[WARN] META_CREDENTIALS_JSON not set or empty');
 
 const db = new Database('rules.db');
 db.exec(`CREATE TABLE IF NOT EXISTS rules (

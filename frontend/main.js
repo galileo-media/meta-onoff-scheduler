@@ -1,4 +1,4 @@
-const API = location.origin.replace(/:\d+$/, ':8080');
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 const accountsEl = document.getElementById('accounts');
 const accountsStatus = document.getElementById('accountsStatus');
@@ -52,7 +52,7 @@ accountSelect.addEventListener('change', async () => {
 async function loadAccounts() {
   accountsStatus.textContent = 'Loading...';
   try {
-    const data = await fetchJSON(`${API}/api/accounts`);
+    const data = await fetchJSON(`${API_BASE}/api/accounts`);
     if (Array.isArray(data)) {
       accounts = data;
       renderAccountsList(data);
@@ -69,7 +69,7 @@ async function loadRules() {
   rulesBody.innerHTML = '';
   const accId = selectedAccount?.id;
   if (!accId) return;
-  const rows = await fetchJSON(`${API}/api/rules?account_id=${encodeURIComponent(accId)}`);
+  const rows = await fetchJSON(`${API_BASE}/api/rules?account_id=${encodeURIComponent(accId)}`);
   for (const r of rows) {
     const tr = document.createElement('tr');
     const targets = Array.isArray(r.target_ids) && r.target_ids.length ? r.target_ids.join(',') : (r.name_filter || '');
@@ -111,7 +111,7 @@ createBtn.addEventListener('click', async () => {
     enabled: true
   };
   try {
-    const r = await fetch(`${API}/api/rules`, {
+    const r = await fetch(`${API_BASE}/api/rules`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(b)
@@ -131,7 +131,7 @@ rulesBody.addEventListener('click', async (e) => {
   const t = e.target;
   if (t && t.matches('button.del')) {
     const id = t.getAttribute('data-id');
-    await fetch(`${API}/api/rules/${id}`, { method: 'DELETE' });
+    await fetch(`${API_BASE}/api/rules/${id}`, { method: 'DELETE' });
     await loadRules();
   }
 });
