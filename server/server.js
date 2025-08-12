@@ -176,6 +176,8 @@ app.get('/api/accounts', async (req, res) => {
     await slackNotify(`Failed to list ad accounts. Error: \`${JSON.stringify(err).slice(0,500)}\``);
     res.status(500).send('Failed to list accounts');
   }
+
+});
 app.post('/api/test-slack', async (req, res) => {
   try {
     const ok = process.env.SLACK_TEST_TOKEN;
@@ -189,7 +191,6 @@ app.post('/api/test-slack', async (req, res) => {
   }
 });
 
-});
 
 app.get('/api/rules', (req, res) => {
   const { account_id } = req.query;
@@ -203,6 +204,7 @@ app.post('/api/rules', (req, res) => {
   const stmt = db.prepare(`INSERT INTO rules (account_id, level, target_ids, name_filter, stop_time, start_time, timezone, enforce_window_minutes, days_of_week, enabled, cred_index)
     VALUES (@account_id, @level, @target_ids, @name_filter, @stop_time, @start_time, @timezone, @enforce_window_minutes, @days_of_week, @enabled, @cred_index)`);
   const info = stmt.run({
+
     account_id: r.account_id,
     level: r.level,
     target_ids: JSON.stringify(r.target_ids || []),
